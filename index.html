@@ -928,6 +928,87 @@ function renderPlan(main){
   updateOutputs();
 }
 
+/* ---------- Bank SMS reader (runs on the phone, nothing is sent anywhere) ---------- */
+const SMS_MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+const SMS_CATS = [
+  ['salary', /\b(salary|payroll|wps)\b/i],
+  ['returns', /\b(dividend|interest|profit (credit|paid)|coupon)\b/i],
+  ['groceries', /\b(carrefour|lulu|spinneys|union ?coop|choithrams|waitrose|nesto|west ?zone|grandiose|al ?maya|viva|kibsons|supermarket|hypermarket|grocery|baqala|geant|madina)\b/i],
+  ['dining', /\b(talabat|deliveroo|careem ?food|noon ?food|zomato|restaurant|cafe|caf[eé]|coffee|starbucks|tim hortons|costa|mcdonald'?s?|kfc|burger|pizza|shawarma|bakery|eatery|kitchen|grill)\b/i],
+  ['transport', /\b(enoc|adnoc|eppco|emarat|petrol|fuel|salik|darb|rta|nol|careem(?! ?food)|uber|taxi|parking|mawaqif|metro)\b/i],
+  ['utilities', /\b(dewa|sewa|fewa|addc|aadc|etisalat|e&|du|empower|tabreed|lootah gas|internet|mobile bill|telecom)\b/i],
+  ['education', /\b(school|gems|taaleem|nord anglia|university|college|academy|tuition|kindergarten|nursery)\b/i],
+  ['health', /\b(pharmacy|aster|life ?pharmacy|boots|hospital|clinic|medical|medcare|mediclinic|nmc|dental|insurance|takaful|daman)\b/i],
+  ['travel', /\b(emirates airline|flydubai|fly ?dubai|air ?arabia|etihad|indigo|air india|airline|airways|booking\.com|agoda|expedia|hotel|airbnb|travel)\b/i],
+  ['fun', /\b(vox|reel cinema|novo|cinema|netflix|spotify|osn|shahid|anghami|apple\.com\/bill|playstation|xbox|steam|youtube)\b/i],
+  ['shopping', /\b(amazon|noon(?! ?food)|namshi|ikea|centrepoint|max fashion|h&m|zara|sharaf ?dg|emax|jumbo|ace hardware|home ?centre|mall|store|shop|trading|fashion|electronics)\b/i],
+  ['loans', /\b(card payment|credit card payment|loan|emi|instal?ment)\b/i],
+  ['family', /\b(remit|remittance|exchange|al ansari|lulu exchange|uae exchange|wise|western union)\b/i],
+  ['housing', /\b(rent|ejari|real estate|properties|property|landlord|chiller|maintenance fee)\b/i]
+];
+function smsTitle(s){ return /[a-z]/.test(s) ? s : s.toLowerCase().replace(/(^|[\s\-&\/])([a-z])/g, (m,a,c)=>a+c.toUpperCase()); }
+function smsDate(text, today){
+  const t = text, y4 = y => (y.length===2 ? 2000+(+y) : +y);
+  let m, d=null;
+  if((m = t.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/))) d=[+m[1],+m[2],+m[3]];
+  else if((m = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4}|\d{2})\b/))) d=[y4(m[3]),+m[2],+m[1]];
+  else if((m = t.match(/\b(\d{1,2})[\s\-\/]?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s\-\/,]*(\d{4}|\d{2})\b/i))) d=[y4(m[3]),SMS_MONTHS[m[2].toLowerCase()],+m[1]];
+  else if((m = t.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})\b/i))) d=[+m[3],SMS_MONTHS[m[1].toLowerCase()],+m[2]];
+  if(!d) return null;
+  const [Y,M,D]=d; if(M<1||M>12||D<1||D>31) return null;
+  const dt = new Date(Y, M-1, D); if(dt.getMonth()!==M-1) return null;
+  const iso = Y+'-'+String(M).padStart(2,'0')+'-'+String(D).padStart(2,'0');
+  if(today && iso > today) return null;
+  return iso;
+}
+function parseSms(raw, homeCur, today){
+  const text = String(raw||'').replace(/\s+/g,' ').trim();
+  if(text.length < 12) return {ok:false, reason:'empty'};
+  const low = text.toLowerCase();
+  if(/\b(otp|one[\s-]?time (password|pin|code)|verification code|activation code|passcode)\b/.test(low)) return {ok:false, reason:'otp'};
+  if(/\b(declined|was not (successful|processed|completed)|unsuccessful|failed|insufficient|could not be processed|rejected)\b/.test(low)) return {ok:false, reason:'declined'};
+  // Amounts with a currency, skipping balances and limits
+  const CUR = '(AED|USD|EUR|GBP|INR|SAR|QAR|OMR|KWD|BHD|PKR|PHP|LKR|NPR|BDT|EGP|GEL|TRY|CAD|AUD|SGD|CHF|JPY|CNY|Dhs?\\.?|DHS?)';
+  const AMT = '(\\d{1,3}(?:,\\d{3})+(?:\\.\\d{1,3})?|\\d+(?:\\.\\d{1,3})?)';
+  const re = new RegExp('(?:\\b'+CUR+'\\s?'+AMT+')|(?:\\b'+AMT+'\\s?'+CUR+'\\b)','gi');
+  const cands=[]; let m;
+  while((m = re.exec(text))){
+    let cur = (m[1]||m[4]||'').toUpperCase().replace(/\./g,''); const amt = parseFloat((m[2]||m[3]).replace(/,/g,''));
+    if(/^DHS?$/.test(cur)) cur='AED';
+    const before = low.slice(Math.max(0, m.index-45), m.index);
+    const skip = /(avl|avail|available|bal\b|balance|limit|outstanding|due|minimum|min\.|total amount due|statement)[^.]*$/.test(before);
+    if(isFinite(amt) && amt>0 && !skip) cands.push({cur, amt, at:m.index});
+  }
+  if(!cands.length) return {ok:false, reason:'noamount'};
+  const home = (homeCur||'AED').toUpperCase();
+  const pick = cands.find(c=>c.cur===home) || cands[0];
+  // Income or expense: the earliest clear keyword wins
+  const inc = /(credited|has been credited|received|deposit(ed)?|salary|refund(ed)?|reversal|inward|transferred to your|cash ?back)/i.exec(low);
+  const exp = /(debited|purchase|spent|used for|used at|was used|paid|payment|withdraw|withdrawn|withdrawal|transferred from your|sent|charged|deducted|transaction of|txn of|purchase of)/i.exec(low);
+  let type = null;
+  if(inc && exp) type = inc.index < exp.index ? 'i' : 'e';
+  else if(inc) type='i'; else if(exp) type='e';
+  if(/\bcredited to (the )?(beneficiary|a\/c of|account of)/i.test(low) && exp) type='e';
+  if(!type && /\bat\s/i.test(text)) type='e';
+  // Merchant or counterpart
+  let who='';
+  const stop = '(?=\\s+on\\s|\\s+in\\s|\\s+has\\s|\\s+is\\s|\\s+was\\s|\\s+towards\\s|\\s*,|\\.\\s|\\s+with\\s|\\s+using\\s|\\s+via\\s|\\s+avl|\\s+avail|\\s+ref|\\s+for\\s|\\s*-\\s*(?:AE|UAE)\\b|\\s+(?:AE|UAE|ARE)\\b|\\s+(?:dubai|sharjah|abu dhabi|ajman)\\b|\\.?$)';
+  let mm = new RegExp('\\bat\\s+([A-Za-z0-9&\'*._\\-\\s]{2,40}?)'+stop,'i').exec(text);
+  if(!mm && type==='i') mm = new RegExp('\\bfrom\\s+(?!your\\b)([A-Za-z0-9&\'._\\-\\s]{2,40}?)'+stop,'i').exec(text);
+  if(!mm && type==='e') mm = new RegExp('\\bto\\s+(?!your\\b|the beneficiary\\b|a\\/c\\b)([A-Za-z0-9&\'._\\-\\s]{2,40}?)'+stop,'i').exec(text);
+  if(!mm) mm = /\b(?:towards|for)\s+(?!your\b|the\b|cash\b)([A-Za-z0-9&'.\-\s]{2,30}?)\s+(bill|fees?|payment|recharge)\b/i.exec(text);
+  if(mm){ who = mm[1].replace(/[*_]+/g,' ').replace(/\s{2,}/g,' ').trim(); if(/^(x+\d+|\d+)$/i.test(who) || /^(your|the)\b/i.test(who)) who=''; }
+  if(type==='e' && (/^atm\b/i.test(who) || (!who && /(atm|cash withdrawal|withdrawn)/i.test(low)))) who='Cash withdrawal';
+  // Category
+  let cat = null; const hay = (who+' '+text);
+  if(type==='i'){ cat = /\b(salary|payroll|wps)\b/i.test(hay)?'salary': /\b(dividend|interest|profit)\b/i.test(hay)?'returns':'other_i'; }
+  else if(type==='e'){
+    if(/(atm|cash withdrawal)/i.test(low)) cat='other_e';
+    else { const hit = SMS_CATS.find(([id,rx])=> id!=='salary' && id!=='returns' && rx.test(who||'')) || SMS_CATS.find(([id,rx])=> id!=='salary' && id!=='returns' && rx.test(hay)); cat = hit ? hit[0] : 'other_e'; }
+  }
+  return {ok:true, type, amount:pick.amt, currency:pick.cur, date:smsDate(text, today), merchant: who ? smsTitle(who).slice(0,60) : '', category:cat, otherCur: cands.some(c=>c.cur!==pick.cur) };
+}
+
 /* ---------- Sheets ---------- */
 function catChips(type, selected, name){
   return h('div',{class:'chips',role:'radiogroup','aria-label':'Category'}, CATS[type].map(c=>h('label',null, h('input',{type:'radio',name,value:c.id,id:name+'-'+c.id,checked:c.id===selected}), h('span',null,c.label))));
@@ -944,6 +1025,42 @@ function openEntry(existing){
     const note=h('input',{class:'inp',id:'f-note',type:'text',maxlength:'80',placeholder:'e.g. Carrefour, electricity bill',value:x.n||''});
     const rep=h('input',{type:'checkbox',id:'f-rep',checked:!!x.r});
     const err=h('div',{class:'err',role:'alert'});
+    // Read a pasted bank SMS (on the phone only)
+    const smsArea=h('textarea',{class:'inp',id:'f-sms',rows:'4',placeholder:'Press and hold here, then tap Paste','aria-label':'Bank SMS text'});
+    const smsMsg=h('div',{class:'note',role:'status','aria-live':'polite'});
+    function applySms(){
+      const raw=smsArea.value.trim(); if(!raw){ smsMsg.textContent=''; return; }
+      const r=parseSms(raw, cur(), todayStr());
+      if(!r.ok){ smsMsg.textContent = ({otp:"That's a one-time password message, not a payment.", declined:'That payment was declined or failed, so there is nothing to log.', noamount:"Couldn't find an amount in that message. Fill the form yourself."})[r.reason] || "Couldn't read that message. Fill the form yourself."; return; }
+      if(r.type){ type=r.type; const radio=body.querySelector('#f-type-'+type); if(radio) radio.checked=true; }
+      const catOk = r.category && ALLCATS[r.category] && ALLCATS[r.category].t===type;
+      const catId = catOk ? r.category : CATS[type][CATS[type].length-1].id;
+      chipWrap.replaceChildren(catChips(type, catId, 'f-cat'));
+      amt.value=String(r.amount);
+      if(r.date) date.value=r.date;
+      if(r.merchant) note.value=r.merchant;
+      const parts=[r.type?(type==='i'?'Income':'Expense'):null, r.currency+' '+nf2.format(r.amount), r.merchant||null, catLabel(catId), r.date?dayName(r.date):'no date in the SMS, so '+dayName(date.value)];
+      let m='Filled in: '+parts.filter(Boolean).join(' · ')+'. Check it, then tap Save.';
+      if(!r.type) m+=' Choose Expense or Income.';
+      if(r.currency!==cur()) m+=' The amount is in '+r.currency+'. Change it to '+cur()+' before saving.';
+      const k=(date.value||'').slice(0,7);
+      const dup=(data()[k]||[]).find(it=>it.t===type && Math.abs(it.a-r.amount)<0.005 && it.d===date.value && !(isEdit && it.id===existing.id));
+      if(dup) m+=' You already have '+money(dup.a,true)+' on this day ('+(dup.n||catLabel(dup.c))+'), so this may be a duplicate.';
+      smsMsg.textContent=m;
+    }
+    let smsT=null;
+    smsArea.addEventListener('input', ()=>{ clearTimeout(smsT); smsT=setTimeout(applySms, 250); });
+    const canRead = !!(navigator.clipboard && navigator.clipboard.readText);
+    const pasteBtn = canRead ? h('button',{class:'btn primary',type:'button',onclick:async()=>{
+      try{ const t=await navigator.clipboard.readText(); if(!t || !t.trim()){ smsMsg.textContent='Nothing copied yet. Copy the SMS in Messages first.'; return; } smsArea.value=t; applySms(); }
+      catch(e){ smsMsg.textContent='Paste was blocked. Press and hold the box below and tap Paste.'; }
+    }},'Paste copied SMS') : null;
+    const smsBox=h('div',{style:'display:grid;gap:10px',hidden:true},
+      h('div',{class:'note'},'In Messages, press and hold the bank SMS and tap Copy. Then paste it here.'),
+      pasteBtn?h('div',{class:'row'},pasteBtn):null,
+      smsArea,
+      h('div',{class:'note muted'},'The message is read on this phone only. It is not sent anywhere or stored.'));
+    const smsToggle=h('button',{class:'btn wide',type:'button','aria-expanded':'false',onclick:()=>{ smsBox.hidden=!smsBox.hidden; smsToggle.setAttribute('aria-expanded',String(!smsBox.hidden)); smsToggle.textContent = smsBox.hidden ? 'Fill from a bank SMS' : 'Hide SMS'; if(!smsBox.hidden && !canRead) smsArea.focus(); }},'Fill from a bank SMS');
     let delArmed=false;
     const delBtn = isEdit ? h('button',{class:'btn danger',type:'button',onclick:()=>{ if(!delArmed){ delArmed=true; delBtn.textContent='Tap again to delete'; return; } deleteItem(existing); closeSheet(); toast('Entry deleted.'); }},'Delete') : null;
     const form=h('form',{style:'display:grid;gap:16px',novalidate:true,onsubmit:e=>{
@@ -956,6 +1073,7 @@ function openEntry(existing){
       if(item.d.slice(0,7)!==S.month && S.view!=='plan'){ S.month=item.d.slice(0,7)>curMonth()?curMonth():item.d.slice(0,7); render(); }
       toast(isEdit?'Entry updated.':'Saved '+money(item.a,true)+' '+(item.t==='i'?'income':'expense')+'.');
     }},
+      smsToggle, smsBox, smsMsg,
       typeCtl,
       h('div',{class:'field'}, h('div',{class:'flabel'},'Amount'), h('div',{class:'amountwrap'}, h('span',null,cur()), amt)),
       h('div',{class:'field'}, h('div',{class:'flabel'},'Category'), chipWrap),
