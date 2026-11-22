@@ -434,6 +434,16 @@ function buildExampleSettings(){
 
 /* ---------- Storage: this phone only ---------- */
 const LS_KEY='money-planner-v1';
+const APP_VERSION='1.3';
+let swReg=null, hadController=false, updateReady=false;
+async function checkUpdate(msg){
+  if(!swReg){ msg.textContent='Updates work when the app is opened from its web address.'; return; }
+  msg.textContent='Checking for updates…';
+  try{ await swReg.update(); }catch(e){ msg.textContent="Couldn't check. Make sure you're online."; return; }
+  if(updateReady){ location.reload(); return; }
+  if(swReg.installing || swReg.waiting){ msg.textContent='Downloading the new version…'; const t0=Date.now(); const iv=setInterval(()=>{ if(updateReady || Date.now()-t0>10000){ clearInterval(iv); location.reload(); } }, 300); return; }
+  msg.textContent='You have the latest version ('+APP_VERSION+').';
+}
 const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
 const IS_ANDROID = /Android/i.test(navigator.userAgent);
 const STANDALONE = window.navigator.standalone===true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
@@ -704,6 +714,7 @@ function syncChip(){
 function daysSince(iso){ if(!iso) return Infinity; const d=Date.parse(iso); return isFinite(d) ? (Date.now()-d)/864e5 : Infinity; }
 function renderBanner(){
   const slot=$('bannerSlot'); slot.replaceChildren();
+  if(updateReady) slot.append(h('div',{class:'banner'}, h('div',{class:'grow'}, h('strong',null,'A new version of Money Planner is ready.'), ' Your entries stay as they are.', h('div',{class:'actions'}, h('button',{class:'btn primary',onclick:()=>location.reload()},'Update now')))));
   if(!STANDALONE && !installHintHidden && (IS_IOS||IS_ANDROID)){
     const steps = IS_IOS
       ? ['In Safari, tap the Share button (on newer iPhones it is inside the ••• menu), then ', h('strong',null,'Add to Home Screen'), '.']
@@ -1051,16 +1062,15 @@ function openEntry(existing){
     let smsT=null;
     smsArea.addEventListener('input', ()=>{ clearTimeout(smsT); smsT=setTimeout(applySms, 250); });
     const canRead = !!(navigator.clipboard && navigator.clipboard.readText);
-    const pasteBtn = canRead ? h('button',{class:'btn primary',type:'button',onclick:async()=>{
-      try{ const t=await navigator.clipboard.readText(); if(!t || !t.trim()){ smsMsg.textContent='Nothing copied yet. Copy the SMS in Messages first.'; return; } smsArea.value=t; applySms(); }
-      catch(e){ smsMsg.textContent='Paste was blocked. Press and hold the box below and tap Paste.'; }
-    }},'Paste copied SMS') : null;
     const smsBox=h('div',{style:'display:grid;gap:10px',hidden:true},
-      h('div',{class:'note'},'In Messages, press and hold the bank SMS and tap Copy. Then paste it here.'),
-      pasteBtn?h('div',{class:'row'},pasteBtn):null,
       smsArea,
-      h('div',{class:'note muted'},'The message is read on this phone only. It is not sent anywhere or stored.'));
-    const smsToggle=h('button',{class:'btn wide',type:'button','aria-expanded':'false',onclick:()=>{ smsBox.hidden=!smsBox.hidden; smsToggle.setAttribute('aria-expanded',String(!smsBox.hidden)); smsToggle.textContent = smsBox.hidden ? 'Fill from a bank SMS' : 'Hide SMS'; if(!smsBox.hidden && !canRead) smsArea.focus(); }},'Fill from a bank SMS');
+      h('div',{class:'note muted'},'Read on this phone only. The message is not sent anywhere or stored.'));
+    const pasteBtn = canRead ? h('button',{class:'btn primary',type:'button',style:'flex:1',onclick:async()=>{
+      try{ const t=await navigator.clipboard.readText(); if(!t || !t.trim()){ smsMsg.textContent='Nothing copied yet. Copy the bank SMS in Messages first.'; return; } smsArea.value=t; smsBox.hidden=false; applySms(); }
+      catch(e){ smsBox.hidden=false; smsArea.focus(); smsMsg.textContent='Paste was blocked. Press and hold the box and tap Paste.'; }
+    }},'Paste bank SMS') : null;
+    const typeBtn=h('button',{class:'btn',type:'button',style:canRead?'':'flex:1',onclick:()=>{ smsBox.hidden=!smsBox.hidden; if(!smsBox.hidden) smsArea.focus(); }}, canRead?'Paste it myself':'Fill from a bank SMS');
+    const smsRow=h('div',{class:'row'}, pasteBtn, typeBtn);
     let delArmed=false;
     const delBtn = isEdit ? h('button',{class:'btn danger',type:'button',onclick:()=>{ if(!delArmed){ delArmed=true; delBtn.textContent='Tap again to delete'; return; } deleteItem(existing); closeSheet(); toast('Entry deleted.'); }},'Delete') : null;
     const form=h('form',{style:'display:grid;gap:16px',novalidate:true,onsubmit:e=>{
@@ -1073,7 +1083,7 @@ function openEntry(existing){
       if(item.d.slice(0,7)!==S.month && S.view!=='plan'){ S.month=item.d.slice(0,7)>curMonth()?curMonth():item.d.slice(0,7); render(); }
       toast(isEdit?'Entry updated.':'Saved '+money(item.a,true)+' '+(item.t==='i'?'income':'expense')+'.');
     }},
-      smsToggle, smsBox, smsMsg,
+      smsRow, smsBox, smsMsg,
       typeCtl,
       h('div',{class:'field'}, h('div',{class:'flabel'},'Amount'), h('div',{class:'amountwrap'}, h('span',null,cur()), amt)),
       h('div',{class:'field'}, h('div',{class:'flabel'},'Category'), chipWrap),
@@ -1162,6 +1172,7 @@ function dataCard(body){
     h('h2',null,'Your data'),
     h('div',{class:'note'}, 'Everything is stored only on this '+(IS_IOS||IS_ANDROID?'phone':'device')+', inside this app. Nothing is sent anywhere, and there is no account.'),
     h('div',{class:'note'}, count+' entr'+(count===1?'y':'ies')+' saved · Last backup: '+last),
+    h('div',{class:'row',style:'justify-content:space-between'}, h('span',{class:'note'},'App version '+APP_VERSION), h('button',{class:'linkbtn',type:'button',onclick:()=>checkUpdate(msg)},'Check for updates')),
     h('div',{class:'row'},
       h('button',{class:'btn primary',type:'button',onclick:async()=>{ if(!count){ msg.textContent='No entries to back up yet.'; return; } msg.textContent=await exportBackup(); }},'Back up now'),
       h('button',{class:'btn',type:'button',onclick:()=>fileIn.click()},'Restore from backup'), fileIn),
@@ -1190,7 +1201,12 @@ window.addEventListener('resize', ()=>{ clearTimeout(rzT); rzT=setTimeout(()=>{ 
 function init(){
   route(); loadLocal(); decideExample(); render();
   if(STANDALONE || !IS_IOS) askPersistent();
-  if('serviceWorker' in navigator && (location.protocol==='https:' || location.hostname==='localhost')) navigator.serviceWorker.register('sw.js').catch(()=>{});
+  if('serviceWorker' in navigator && (location.protocol==='https:' || location.hostname==='localhost')){
+    hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js').then(r=>{ swReg=r; }).catch(()=>{});
+    navigator.serviceWorker.addEventListener('controllerchange', ()=>{ if(hadController){ updateReady=true; renderBanner(); } hadController=true; });
+    document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && swReg) swReg.update().catch(()=>{}); });
+  }
   // Another tab or the installed app changed the data
   window.addEventListener('storage', e=>{ if(e.key===LS_KEY){ loadLocal(); decideExample(); if($('overlay').hidden) render(); } });
 }
