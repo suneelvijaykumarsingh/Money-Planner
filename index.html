@@ -163,6 +163,14 @@ th{font-weight:600;color:var(--ink-2);font-size:12.5px}
 .meter{height:10px;border-radius:999px;background:var(--accent-wash);overflow:hidden}
 .meter i{display:block;height:100%;background:var(--accent);border-radius:999px}
 .meter.full i{background:var(--good)}
+.meter.over i{background:var(--crit)}
+.meter.thin{height:6px}
+.ghead{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;font-weight:600;color:var(--ink-2);text-transform:uppercase;letter-spacing:.04em;padding:12px 0 2px;border-bottom:1px solid var(--line)}
+.pline{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
+.pline .nm{background:none;border:0;text-align:left;padding:6px 0;min-width:0;color:inherit}
+.pline .nm:disabled{cursor:default}
+.pline .amtin{width:120px;text-align:right;padding:9px 10px}
+.pline .amtin[readonly]{background:transparent;border-color:transparent}
 
 /* Lists */
 .list{display:grid}
@@ -372,7 +380,7 @@ function h(tag, props, ...kids){
 function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
 
 /* ---------- State ---------- */
-function defaultSettings(){ return {started:false, cur:'AED', budgets:{}, plan:{efMonths:6, efSaved:0, efShare:50, invested:0, ret:6, years:10, override:null}, goals:[], skipped:{}, lastBackup:null}; }
+function defaultSettings(){ return {started:false, cur:'AED', budgets:{}, plan:{efMonths:6, efSaved:0, efShare:50, invested:0, ret:6, years:10, override:null}, goals:[], skipped:{}, lastBackup:null, mplans:{}}; }
 function mergeSettings(s){
   const d = defaultSettings(); if(!s || typeof s!=='object') return d;
   return {
@@ -381,14 +389,15 @@ function mergeSettings(s){
     plan: Object.assign({}, d.plan, (s.plan && typeof s.plan==='object') ? s.plan : {}),
     goals: Array.isArray(s.goals) ? s.goals.filter(g=>g && typeof g.name==='string') : [],
     skipped: (s.skipped && typeof s.skipped==='object') ? s.skipped : {},
-    lastBackup: typeof s.lastBackup==='string' ? s.lastBackup : null
+    lastBackup: typeof s.lastBackup==='string' ? s.lastBackup : null,
+    mplans: cleanPlans(s.mplans)
   };
 }
 const S = {
   mode:'local',
   months:{}, settings:defaultSettings(),
   example:false, exMonths:null, exSettings:null,
-  view:'overview', month:curMonth(), filter:'all', search:''
+  view:'overview', month:curMonth(), filter:'all', search:'', planTab:'month', planMonth:addMonths(curMonth(),1)
 };
 const data = () => S.example ? S.exMonths : S.months;
 const settings = () => S.example ? S.exSettings : S.settings;
@@ -434,7 +443,7 @@ function buildExampleSettings(){
 
 /* ---------- Storage: this phone only ---------- */
 const LS_KEY='money-planner-v1';
-const APP_VERSION='1.3';
+const APP_VERSION='1.4';
 let swReg=null, hadController=false, updateReady=false;
 async function checkUpdate(msg){
   if(!swReg){ msg.textContent='Updates work when the app is opened from its web address.'; return; }
@@ -791,6 +800,16 @@ function renderOverview(main){
         h('button',{class:'btn',onclick:()=>{ saveSettings(s=>{ s.skipped[k]=true; }); render(); }}, 'Not this month'))
     ));
   }
+  // Month plan on the overview
+  if(!S.example){
+    const mp=settings().mplans[k];
+    if(mp) frag.push(h('section',{class:'card'}, h('div',{class:'cardhead'}, h('h2',null, monthName(k,'long').split(' ')[0]+' plan'), h('button',{class:'linkbtn',onclick:()=>goToPlan(k)},'Open plan')), ...planProgress(k, planTotals(mp.lines), true)));
+    const nk=addMonths(k,1);
+    if(k===curMonth() && !settings().mplans[nk] && +todayStr().slice(8)>=15) frag.push(h('section',{class:'card'},
+      h('div',{class:'cardhead'}, h('h2',null,'Plan '+monthName(nk,'long').split(' ')[0])),
+      h('div',{class:'note'},'Set your income, bills and spending for '+monthName(nk)+' before it starts.'),
+      h('div',{class:'row'}, h('button',{class:'btn primary',onclick:()=>goToPlan(nk)},'Plan '+monthName(nk,'long').split(' ')[0]))));
+  }
   // 6-month chart
   const rows=[]; for(let i=5;i>=0;i--){ const mk=addMonths(k,-i), tt=totals(D[mk]||[]); rows.push({k:mk, inc:tt.inc, spend:tt.spend}); }
   const chartEl=h('div',{class:'chart'});
@@ -857,6 +876,12 @@ function renderEntries(main){
 }
 
 function renderPlan(main){
+  const tabs=h('div',{class:'segctl full',role:'radiogroup','aria-label':'Plan view'}, [['month','Month plan'],['long','Long term']].map(([v,l])=>h('label',null, h('input',{type:'radio',name:'plantab',value:v,id:'plantab-'+v,checked:S.planTab===v,onchange:()=>{ S.planTab=v; render(); }}), h('span',null,l))));
+  const holder=h('div',{style:'display:grid;gap:14px'});
+  main.replaceChildren(tabs, holder);
+  if(S.planTab==='long') renderLongTerm(holder); else renderMonthPlan(holder);
+}
+function renderLongTerm(main){
   const D=data(), st=settings(), cm=curMonth(), P=computePlan(D, st, cm), p=st.plan;
   const basisLabel = P.basis.length ? (P.basis.length===1 ? monthName(P.basis[0]) : monthName(P.basis[0],'short')+'–'+monthName(P.basis[P.basis.length-1],'my')) : null;
   const field=(id,label,val,opts)=>{ opts=opts||{}; return h('div',{class:'field'}, h('label',{for:id},label), h('input',{class:'inp num',id,type:'text',inputmode:opts.int?'numeric':'decimal',value:val==null?'':String(val),placeholder:opts.ph||'',autocomplete:'off',
@@ -1018,6 +1043,202 @@ function parseSms(raw, homeCur, today){
     else { const hit = SMS_CATS.find(([id,rx])=> id!=='salary' && id!=='returns' && rx.test(who||'')) || SMS_CATS.find(([id,rx])=> id!=='salary' && id!=='returns' && rx.test(hay)); cat = hit ? hit[0] : 'other_e'; }
   }
   return {ok:true, type, amount:pick.amt, currency:pick.cur, date:smsDate(text, today), merchant: who ? smsTitle(who).slice(0,60) : '', category:cat, otherCur: cands.some(c=>c.cur!==pick.cur) };
+}
+
+/* ---------- Month plan (budget for a coming month, then plan vs actual) ---------- */
+const roundUp50 = v => Math.ceil(v/50)*50;
+function cleanPlans(p){
+  const out={}; if(!p || typeof p!=='object') return out;
+  for(const [k,v] of Object.entries(p)){
+    if(!/^\d{4}-\d{2}$/.test(k) || !v || !Array.isArray(v.lines)) continue;
+    out[k]={ at: typeof v.at==='string' ? v.at : null,
+      lines: v.lines.filter(l=>l && typeof l.id==='string' && (l.t==='e'||l.t==='i') && ALLCATS[l.c] && ALLCATS[l.c].t===l.t && isFinite(+l.a) && +l.a>=0)
+        .map(l=>({id:l.id, t:l.t, c:l.c, n:String(l.n||'').slice(0,60), a:+l.a, fixed:!!l.fixed})) };
+  }
+  return out;
+}
+/* A first draft: regular (monthly) entries, plus budgets or the 3-month average for day-to-day spending */
+function draftPlan(){
+  const D=data(), st=settings(), cm=curMonth(), lines=[], recByCat={};
+  let src=null; for(let i=0;i<4;i++){ const mk=addMonths(cm,-i); if((D[mk]||[]).some(x=>x.r)){ src=mk; break; } }
+  (src ? D[src].filter(x=>x.r) : []).forEach(x=>{
+    lines.push({id:uid(), t:x.t, c:x.c, n:x.n||catLabel(x.c), a:x.a, fixed:true});
+    if(x.t==='e') recByCat[x.c]=(recByCat[x.c]||0)+x.a;
+  });
+  let basis=[1,2,3].map(n=>addMonths(cm,-n)).filter(mk=>(D[mk]||[]).length);
+  if(!basis.length && (D[cm]||[]).length) basis=[cm];
+  const sum={}; basis.forEach(mk=>D[mk].filter(x=>x.t==='e' && !x.r && !isSaving(x)).forEach(x=>{ sum[x.c]=(sum[x.c]||0)+x.a; }));
+  // Travel is usually a one-off, so it is only added when it has a budget
+  CATS.e.filter(c=>!c.saving).forEach(c=>{
+    const b=st.budgets[c.id];
+    if(c.id==='travel' && !b) return;
+    const a = b ? Math.max(0, b-(recByCat[c.id]||0)) : (basis.length ? roundUp50((sum[c.id]||0)/basis.length) : 0);
+    if(a>=1) lines.push({id:uid(), t:'e', c:c.id, n:c.label, a, fixed:false});
+  });
+  return lines;
+}
+function planTotals(lines){
+  let inc=0, spend=0, inv=0; const byCat={};
+  (lines||[]).forEach(l=>{ if(l.t==='i') inc+=l.a; else if(ALLCATS[l.c] && ALLCATS[l.c].saving) inv+=l.a; else { spend+=l.a; byCat[l.c]=(byCat[l.c]||0)+l.a; } });
+  return {inc, spend, inv, net:inc-spend, rate: inc>0 ? (inc-spend)/inc : null, byCat};
+}
+function savePlan(k, lines){ saveSettings(s=>{ s.mplans[k]={lines, at:new Date().toISOString()}; }); render(); }
+function daysLeftIn(k){ if(k!==curMonth()) return null; return daysInMonth(k) - (+todayStr().slice(8)) + 1; }
+function goToPlan(k){ S.planTab='month'; S.planMonth=k; if(location.hash==='#plan') render(); else location.hash='plan'; window.scrollTo(0,0); }
+
+/* Plan vs actual, shared by the Plan tab and the Overview card */
+function planProgress(k, pt, compact){
+  const items=data()[k]||[], t=totals(items), left=pt.spend-t.spend, dl=daysLeftIn(k);
+  const pct = pt.spend>0 ? t.spend/pt.spend : (t.spend>0?1:0), over = t.spend>pt.spend && pt.spend>0;
+  const status = pt.spend<=0 ? pill('neutral', t.spend>0 ? 'No spending in the plan' : 'Nothing spent yet')
+    : over ? pill('crit','Over plan by '+money(t.spend-pt.spend))
+    : pct>=0.9 && pt.spend>0 ? pill('warn',money(left)+' left')
+    : pill('good',money(left)+' left');
+  const kids=[
+    h('div',{class:'row',style:'justify-content:space-between'}, h('span',{class:'num'}, 'Spent '+money(t.spend)+' of '+money(pt.spend)), status),
+    h('div',{class:'meter'+(over?' over':''),role:'meter','aria-valuemin':'0','aria-valuemax':'100','aria-valuenow':String(Math.round(Math.min(1,pct)*100)),'aria-label':'Spending against plan'}, h('i',{style:'width:'+(Math.min(1,pct)*100).toFixed(1)+'%'}))
+  ];
+  const notes=[];
+  if(dl && !over && left>0) notes.push('About '+money(left/dl)+' a day for the last '+dl+' day'+(dl>1?'s':'')+'.');
+  if(pt.inc>0) notes.push('Income so far '+money(t.inc)+' of '+money(pt.inc)+' expected.');
+  if(notes.length) kids.push(h('div',{class:'note'}, notes.join(' ')));
+  if(compact) return kids;
+  // Per category
+  const act={}; items.filter(x=>x.t==='e' && !isSaving(x)).forEach(x=>{ act[x.c]=(act[x.c]||0)+x.a; });
+  const cats=[...new Set([...Object.keys(pt.byCat), ...Object.keys(act)])].sort((a,b)=>((act[b]||0)-(pt.byCat[b]||0))-((act[a]||0)-(pt.byCat[a]||0)));
+  if(cats.length) kids.push(h('div',{class:'cats',style:'margin-top:6px'}, cats.map(c=>{
+    const a=act[c]||0, p=pt.byCat[c]||0, r = p>0 ? a/p : 1;
+    return h('div',{class:'cat'},
+      h('div',{class:'top1'}, h('span',{class:'nm'},catLabel(c)), h('span',{class:'amt'}, money(a), p?h('span',{class:'muted'},' of '+plain(p)):null)),
+      p>0 ? h('div',{class:'meter thin'+(a>p?' over':'')}, h('i',{style:'width:'+(Math.min(1,r)*100).toFixed(1)+'%'})) : null,
+      a>p && p>0 ? h('div',null,pill('crit','Over by '+money(a-p))) : !p ? h('div',null,pill('neutral','Not in the plan')) : null);
+  })));
+  return kids;
+}
+
+function renderMonthPlan(el){
+  const k=S.planMonth, cm=curMonth(), st=settings();
+  const saved = st.mplans[k];
+  const preview = S.example;
+  const plan = saved || (preview ? {lines:draftPlan(), at:null} : null);
+  const name = monthName(k), short=monthName(k,'long').split(' ')[0];
+  const sw=h('div',{class:'monthrow',style:'margin:0'},
+    h('button',{class:'iconbtn','aria-label':'Previous month',disabled:k<=addMonths(cm,-12),onclick:()=>{ S.planMonth=addMonths(k,-1); render(); },html:'<svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>'}),
+    h('div',{class:'label'}, name, k===addMonths(cm,1)?h('div',{class:'small muted',style:'font-weight:400'},'Next month'):k===cm?h('div',{class:'small muted',style:'font-weight:400'},'This month'):null),
+    h('button',{class:'iconbtn','aria-label':'Next month',disabled:k>=addMonths(cm,12),onclick:()=>{ S.planMonth=addMonths(k,1); render(); },html:'<svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>'}));
+
+  if(!plan){
+    const prevPlan = st.mplans[addMonths(k,-1)];
+    el.replaceChildren(sw, h('section',{class:'card'},
+      h('h2',null, k<cm ? 'No plan was made for '+name : 'Plan '+name),
+      h('div',{class:'note'}, 'Set how much you expect to earn and spend in '+short+'. Then watch how the month goes against the plan.'),
+      h('div',{class:'note'}, 'Build from your usual month starts with your monthly entries (salary, rent, fees) and your budgets or average day-to-day spending. You can change every line.'),
+      h('div',{style:'display:grid;gap:10px'},
+        h('button',{class:'btn primary wide',onclick:()=>{ savePlan(k, draftPlan()); toast('Plan for '+short+' created. Adjust the lines to fit.'); }},'Build from my usual month'),
+        prevPlan ? h('button',{class:'btn wide',onclick:()=>{ savePlan(k, prevPlan.lines.map(l=>Object.assign({},l,{id:uid()}))); toast('Copied the '+monthName(addMonths(k,-1),'long').split(' ')[0]+' plan.'); }},'Copy the '+monthName(addMonths(k,-1),'long').split(' ')[0]+' plan') : null,
+        h('button',{class:'btn wide',onclick:()=>{ savePlan(k, []); }},'Start with an empty plan'))
+    ));
+    return;
+  }
+
+  const lines=plan.lines;
+  const sumBox=h('div',{style:'display:grid;gap:14px'}), allocBox=h('section',{class:'card'}), subtotals={};
+  function drawSummary(){
+    const pt=planTotals(lines);
+    const pillEl = pt.net<0 ? pill('crit','Planned spending is more than income') : rateStatus(pt.rate);
+    sumBox.replaceChildren(
+      h('section',{class:'hero'},
+        h('div',{class:'lbl'}, 'Planned savings for '+short),
+        h('div',{class:'big'}, h('span',{class:'cur'},cur()), (pt.net<0?'−':'')+plain(Math.abs(pt.net))),
+        h('div',{class:'row'}, pillEl, pt.inv>0?h('span',{class:'small muted'},'incl. '+money(pt.inv)+' set aside to invest'):null)),
+      h('div',{class:'tiles'},
+        h('div',{class:'tile'}, h('div',{class:'lbl'}, h('i',{class:'key',style:'background:var(--s-income)'}),'Expected income'), h('div',{class:'val'}, moneyEl(pt.inc))),
+        h('div',{class:'tile'}, h('div',{class:'lbl'}, h('i',{class:'key',style:'background:var(--s-expense)'}),'Planned spending'), h('div',{class:'val'}, moneyEl(pt.spend))))
+    );
+    // Against the long-term plan
+    const P=computePlan(data(), st, cm), share=clamp(num(st.plan.efShare,50),0,100);
+    const avail=Math.max(0,pt.net), ef = P.efGap>0 ? Math.min(P.efGap, avail*share/100) : 0;
+    const goals=Math.min(avail-ef, P.goalsNeed), longT=Math.max(0, avail-ef-goals), short2=Math.max(0, P.goalsNeed-(avail-ef));
+    allocBox.replaceChildren(
+      h('div',{class:'cardhead'}, h('h2',null,'Where the savings go'), h('button',{class:'linkbtn',onclick:()=>{ S.planTab='long'; render(); window.scrollTo(0,0); }},'Long-term plan')),
+      h('div',{class:'seglegend'},
+        h('div',null, h('i',{class:'key',style:'background:var(--s-ef)'}),'Emergency fund', h('span',{class:'v'},money(ef))),
+        h('div',null, h('i',{class:'key',style:'background:var(--s-goal)'}),'Goals', h('span',{class:'v'},money(goals))),
+        h('div',null, h('i',{class:'key',style:'background:var(--s-long)'}),'Long-term investing', h('span',{class:'v'},money(longT)))),
+      short2>0 ? h('div',null,pill('warn','Goals need '+money(short2)+' more than this plan saves')) : (P.goalsNeed>0||P.efGap>0) && avail>0 ? h('div',null,pill('good','Covers your emergency fund and goals')) : null
+    );
+    for(const [g,elx] of Object.entries(subtotals)) elx.textContent=money(groupLines(g).reduce((s,l)=>s+l.a,0));
+  }
+  const groupOf = l => l.t==='i' ? 'inc' : (ALLCATS[l.c] && ALLCATS[l.c].saving) ? 'inv' : l.fixed ? 'fix' : 'var';
+  const groupLines = g => lines.filter(l=>groupOf(l)===g);
+  const GROUPS=[['inc','Income'],['fix','Bills and fixed costs'],['var','Day-to-day spending'],['inv','Savings and investments']];
+  const linesCard=h('section',{class:'card'}, h('div',{class:'cardhead'}, h('h2',null,'Plan lines'), h('span',{class:'small muted'}, preview?'Example':'Tap a name to edit')));
+  GROUPS.forEach(([g,label])=>{
+    const gl=groupLines(g); if(!gl.length) return;
+    const st2=h('span',{class:'num'}); subtotals[g]=st2;
+    linesCard.append(h('div',{class:'ghead'}, h('span',null,label), st2));
+    gl.forEach(l=>{
+      const inp=h('input',{class:'inp num amtin',type:'text',inputmode:'decimal',value:String(l.a),'aria-label':(l.n||catLabel(l.c))+' amount',readonly:preview,autocomplete:'off',
+        oninput:e=>{ const v=num(e.target.value,0); l.a=Math.max(0,Math.round(v*100)/100); drawSummary(); },
+        onchange:()=>{ plan.at=new Date().toISOString(); saveSettings(()=>{}); }});
+      linesCard.append(h('div',{class:'pline'},
+        h('button',{class:'nm',type:'button',disabled:preview,onclick:()=>openPlanLine(k,l)}, h('div',{class:'t1'},l.n||catLabel(l.c)), (l.n && l.n!==catLabel(l.c)) ? h('div',{class:'t2'},catLabel(l.c)) : null),
+        inp));
+    });
+  });
+  if(!lines.length) linesCard.append(h('div',{class:'empty'},'No lines yet. Add your expected income first, then your costs.'));
+  if(!preview) linesCard.append(h('div',{class:'row',style:'margin-top:4px'},
+    h('button',{class:'btn',onclick:()=>openPlanLine(k,null,'i')},'Add income'),
+    h('button',{class:'btn',onclick:()=>openPlanLine(k,null,'e')},'Add expense')));
+  if(!preview) linesCard.append(h('div',{class:'note'},'Only regular income is added for you. Add side income or a bonus only if you are sure of it. One-off costs like travel or annual fees can go in as expenses.'));
+
+  const kids=[sw];
+  if(preview) kids.push(h('div',{class:'banner',style:'margin:0'}, h('div',{class:'grow'}, h('strong',null,'Example plan.'), ' It is built from the example figures. Start your own to plan with your real numbers.',
+    h('div',{class:'actions'}, h('button',{class:'btn primary',onclick:()=>{ beginReal(); savePlan(k, draftPlan()); toast('Your plan for '+short+' is ready.'); }},'Start my own plan')))));
+  kids.push(sumBox);
+  if(k<=cm){
+    kids.push(h('section',{class:'card'}, h('div',{class:'cardhead'}, h('h2',null, k===cm?'How '+short+' is going':'How '+short+' went')), ...planProgress(k, planTotals(lines), false)));
+  }
+  kids.push(allocBox, linesCard);
+  if(!preview){
+    let armedR=false, armedD=false;
+    const rebuild=h('button',{class:'btn',onclick:()=>{ if(!armedR){ armedR=true; rebuild.textContent='Tap again to replace all lines'; return; } savePlan(k, draftPlan()); toast('Plan rebuilt from your usual month.'); }},'Rebuild from usual month');
+    const del=h('button',{class:'btn danger',onclick:()=>{ if(!armedD){ armedD=true; del.textContent='Tap again to delete this plan'; return; } saveSettings(s=>{ delete s.mplans[k]; }); render(); toast('Plan deleted.'); }},'Delete plan');
+    kids.push(h('div',{class:'row'}, rebuild, del));
+  }
+  el.replaceChildren(...kids);
+  drawSummary();
+}
+
+function openPlanLine(k, line, presetT){
+  const isEdit=!!line;
+  const x = line ? Object.assign({},line) : {t:presetT||'e', c: presetT==='i'?'salary':'groceries', n:'', a:'', fixed:false};
+  openSheet(isEdit?'Edit plan line':(x.t==='i'?'Add expected income':'Add planned expense'), body=>{
+    let type=x.t;
+    const chipWrap=h('div',null, catChips(type, x.c, 'pl-cat'));
+    const fixedRow=h('label',{class:'check',for:'pl-fixed',hidden:type==='i'}, h('input',{type:'checkbox',id:'pl-fixed',checked:!!x.fixed}), h('span',null,'Fixed cost',h('br'),h('span',{class:'muted small'},'Same amount every month, like rent or school fees.')));
+    const typeCtl=h('div',{class:'segctl full',role:'radiogroup','aria-label':'Type'}, [['e','Expense'],['i','Income']].map(([v,l])=>h('label',null,h('input',{type:'radio',name:'pl-type',value:v,id:'pl-type-'+v,checked:type===v,onchange:()=>{ type=v; chipWrap.replaceChildren(catChips(v, CATS[v][0].id, 'pl-cat')); fixedRow.hidden = v==='i'; }}),h('span',null,l))));
+    const nameIn=h('input',{class:'inp',id:'pl-name',type:'text',maxlength:'60',placeholder:'Leave empty to use the category name',value:x.n||''});
+    const amt=h('input',{id:'pl-amount',type:'text',inputmode:'decimal',autocomplete:'off',placeholder:'0',value:x.a===''?'':String(x.a),'aria-label':'Amount',autofocus:!isEdit});
+    const err=h('div',{class:'err',role:'alert'});
+    let armed=false;
+    const del = isEdit ? h('button',{class:'btn danger',type:'button',onclick:()=>{ if(!armed){ armed=true; del.textContent='Tap again to delete'; return; } saveSettings(s=>{ const p=s.mplans[k]; if(p) p.lines=p.lines.filter(l=>l.id!==line.id); }); closeSheet(); }},'Delete') : null;
+    body.append(h('form',{style:'display:grid;gap:16px',novalidate:true,onsubmit:e=>{
+      e.preventDefault(); err.textContent='';
+      const a=num(amt.value,NaN); if(!(a>=0) || amt.value.trim()===''){ err.textContent='Enter an amount.'; amt.focus(); return; }
+      const cSel=body.querySelector('input[name="pl-cat"]:checked');
+      const c=cSel?cSel.value:CATS[type][0].id;
+      const nl={id:isEdit?line.id:uid(), t:type, c, n:nameIn.value.trim().slice(0,60)||catLabel(c), a:Math.round(a*100)/100, fixed: type==='e' && body.querySelector('#pl-fixed').checked};
+      saveSettings(s=>{ const p=s.mplans[k] || (s.mplans[k]={lines:[],at:null}); const i=p.lines.findIndex(l=>l.id===nl.id); if(i>=0) p.lines[i]=nl; else p.lines.push(nl); p.at=new Date().toISOString(); });
+      closeSheet(); toast(isEdit?'Line updated.':'Line added.');
+    }},
+      typeCtl,
+      h('div',{class:'field'}, h('div',{class:'flabel'},'Amount for the month'), h('div',{class:'amountwrap'}, h('span',null,cur()), amt)),
+      h('div',{class:'field'}, h('div',{class:'flabel'},'Category'), chipWrap),
+      h('div',{class:'field'}, h('label',{for:'pl-name'},'Name'), nameIn),
+      fixedRow, err,
+      h('div',{class:'row'}, h('button',{class:'btn primary wide',type:'submit',style:'flex:1'}, isEdit?'Save changes':'Add to plan'), del)));
+  });
 }
 
 /* ---------- Sheets ---------- */

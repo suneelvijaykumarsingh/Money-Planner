@@ -1,5 +1,5 @@
 /* Money Planner offline cache. Your entries are not stored here; they live in the app's local storage. */
-const CACHE = 'money-planner-v3';
+const CACHE = 'money-planner-v4';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
